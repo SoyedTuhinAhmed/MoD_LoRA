@@ -1,20 +1,29 @@
 """
-Main entry point for BERT + LoRA fine-tuning.
+Main entry point for BERT + LoRA fine-tuning with PHANTOM noise injection.
+
+Model build pipeline (training mode)
+-------------------------------------
+  1. Load google-bert/bert-base-uncased (base model + tokenizer)
+  2. Apply temperature-aware ReRAM drift via noise_injection.py
+       → all base weights are perturbed and frozen
+  3. Attach PEFT LoRA adapters to the noisy backbone
+       → only LoRA params are trainable
+  4. Train with train.py (checkpoints save LoRA params only)
 
 Usage examples
 --------------
-# Train on SST-2 with defaults:
+# Train on SST-2 with defaults (T_tile=360 K, no extra noise):
 python main.py --dataset sst2 --mode train
 
-# Train on MNLI, then evaluate:
-python main.py --dataset mnli --mode both --num_epochs 3 --batch_size 16
+# Train on MNLI at 400 K with stochastic noise:
+python main.py --dataset mnli --mode both --T_tile 400 --sigma_rel 0.05
 
 # Evaluate a previously trained checkpoint:
 python main.py --dataset sst2 --mode eval --output_dir runs/sst2_lora_001
 
-# Custom LoRA settings:
-python main.py --dataset sst2 --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-               --lora_target_modules query value key
+# Custom LoRA + injection settings:
+python main.py --dataset sst2 --lora_r 8 --lora_alpha 16 \
+               --T_tile 360 --sigma_rel 0.02 --inject_bias
 """
 
 import argparse
@@ -22,6 +31,9 @@ import json
 import os
 import sys
 from datetime import datetime
+
+from noise_injection import make_noisy_model_for_temperature, InjectionConfig
+from utils.model_utils import load_model_and_tokenizer, apply_lora
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +70,28 @@ def parse_args():
         type=str,
         default="google-bert/bert-base-uncased",
         help="HuggingFace model ID for the BERT backbone.",
+    )
+
+    # ── Noise injection ──────────────────────────────────────────────────────
+    noise_grp = parser.add_argument_group("Noise Injection (PHANTOM ReRAM drift)")
+    noise_grp.add_argument(
+        "--T_tile",
+        type=float,
+        default=360.0,
+        help="Tile temperature in Kelvin for PHANTOM drift model (300–400 K range).",
+    )
+    noise_grp.add_argument(
+        "--sigma_rel",
+        type=float,
+        default=0.0,
+        help="Relative std for optional Gaussian noise on top of drift "
+             "(0.0 = pure multiplicative drift only).",
+    )
+    noise_grp.add_argument(
+        "--inject_bias",
+        action="store_true",
+        default=False,
+        help="Also perturb bias parameters (default: keep biases digital/clean).",
     )
 
     # ── LoRA ─────────────────────────────────────────────────────────────────
@@ -147,6 +181,11 @@ def build_config(args) -> dict:
         # Model
         "model_name": args.model_name,
 
+        # Noise injection
+        "T_tile":       args.T_tile,
+        "sigma_rel":    args.sigma_rel,
+        "inject_bias":  args.inject_bias,
+
         # LoRA
         "lora_r":              args.lora_r,
         "lora_alpha":          args.lora_alpha,
@@ -188,6 +227,71 @@ def build_config(args) -> dict:
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def build_model(config: dict):
+    """
+    Build the full model pipeline:
+      1. Load BERT base model + tokenizer
+      2. Apply PHANTOM temperature-aware noise injection (freezes base weights)
+      3. Attach LoRA adapters (only these will be trained)
+
+    Returns
+    -------
+    model : PeftModel
+    tokenizer
+    lora_cfg : LoraConfig  (for logging)
+    injection_meta : dict  (beta, T_tile, … for logging)
+    """
+    from utils.dataset_utils import DATASET_CONFIG
+
+    num_labels = DATASET_CONFIG[config["dataset"]]["num_labels"]
+
+    # Step 1 – base model
+    print(f"[main] Loading base model '{config['model_name']}' …")
+    base_model, tokenizer = load_model_and_tokenizer(
+        model_name=config["model_name"],
+        num_labels=num_labels,
+    )
+
+    # Step 2 – noise injection
+    T_tile = config["T_tile"]
+    injection_cfg = InjectionConfig(
+        sigma_rel=config["sigma_rel"],
+        inject_bias=config["inject_bias"],
+    )
+    print(f"[main] Applying PHANTOM noise injection at T_tile={T_tile} K …")
+    noisy_model = make_noisy_model_for_temperature(
+        base_model,
+        T_tile,
+        config=injection_cfg,
+    )
+    beta = getattr(noisy_model, "_injection_beta", None)
+    print(f"[main] beta(T={T_tile} K) = {beta:.4f}  "
+          f"sigma_rel={injection_cfg.sigma_rel}  inject_bias={injection_cfg.inject_bias}")
+
+    injection_meta = {
+        "T_tile_K":      T_tile,
+        "beta":          beta,
+        "sigma_rel":     injection_cfg.sigma_rel,
+        "inject_bias":   injection_cfg.inject_bias,
+        "inject_linear": injection_cfg.inject_linear,
+        "inject_conv2d": injection_cfg.inject_conv2d,
+    }
+
+    # Step 3 – attach LoRA to noisy_model
+    # Base params are already frozen; apply_lora re-enables grads on adapters only.
+    print("[main] Attaching LoRA adapters to noisy model …")
+    model, lora_cfg = apply_lora(
+        noisy_model,
+        r=config["lora_r"],
+        lora_alpha=config["lora_alpha"],
+        lora_dropout=config["lora_dropout"],
+        target_modules=config["lora_target_modules"],
+        bias=config.get("lora_bias", "none"),
+    )
+
+    return model, tokenizer, lora_cfg, injection_meta
+
+
 def main():
     args   = parse_args()
     config = build_config(args)
@@ -196,13 +300,20 @@ def main():
     print(f"  Dataset  : {config['dataset'].upper()}")
     print(f"  Mode     : {config['mode']}")
     print(f"  Model    : {config['model_name']}")
+    print(f"  T_tile   : {config['T_tile']} K  sigma_rel={config['sigma_rel']}")
     print(f"  LoRA r   : {config['lora_r']}  alpha={config['lora_alpha']}")
     print(f"  Output   : {config['output_dir']}")
     print("=" * 60 + "\n")
 
     if config["mode"] in ("train", "both"):
         from train import train
-        best_ckpt, best_acc = train(config)
+
+        model, tokenizer, lora_cfg, injection_meta = build_model(config)
+
+        # Embed injection metadata into config so it lands in experiment_log.json
+        config["noise_injection"] = injection_meta
+
+        best_ckpt, best_acc = train(config, model, tokenizer, lora_cfg)
         print(f"\n[main] Training finished — best val_acc={best_acc:.4f}")
 
     if config["mode"] in ("eval", "both"):

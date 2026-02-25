@@ -15,7 +15,7 @@ from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
 
 from utils.dataset_utils import load_and_tokenize_dataset, build_dataloaders
-from utils.model_utils import load_model_and_tokenizer, apply_lora, save_lora_checkpoint
+from utils.model_utils import save_lora_checkpoint
 from utils.logging_utils import ExperimentLogger
 
 
@@ -88,7 +88,7 @@ def evaluate(model, loader, device):
 # Main training routine
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train(config: Dict):
+def train(config: Dict, model, tokenizer, lora_cfg=None):
     """
     Full training pipeline.
 
@@ -97,6 +97,13 @@ def train(config: Dict):
     config : dict
         Flat dictionary produced by ``main.py`` containing all
         hyperparameters and path settings.
+    model :
+        A PeftModel (base + LoRA adapters) already built and ready to train.
+        Base parameters must already be frozen; only LoRA params need grads.
+    tokenizer :
+        HuggingFace tokenizer matching the model.
+    lora_cfg : LoraConfig, optional
+        LoRA configuration object; logged to the experiment log if supplied.
     """
     # ── Device ──────────────────────────────────────────────────────────────
     if config["device"] == "auto":
@@ -104,6 +111,8 @@ def train(config: Dict):
     else:
         device = torch.device(config["device"])
     print(f"[train] Using device: {device}")
+
+    model = model.to(device)
 
     # ── Reproducibility ─────────────────────────────────────────────────────
     torch.manual_seed(config["seed"])
@@ -116,28 +125,13 @@ def train(config: Dict):
         run_name=config.get("run_name", ""),
     )
     logger.log_config(config)
+    if lora_cfg is not None:
+        logger.log_lora_config(lora_cfg)
 
-    # ── Model + Tokenizer ───────────────────────────────────────────────────
+    # ── Dataset ─────────────────────────────────────────────────────────────
     dataset_name = config["dataset"]
     num_labels   = config["num_labels"]
 
-    base_model, tokenizer = load_model_and_tokenizer(
-        model_name=config["model_name"],
-        num_labels=num_labels,
-    )
-
-    model, lora_cfg = apply_lora(
-        base_model,
-        r=config["lora_r"],
-        lora_alpha=config["lora_alpha"],
-        lora_dropout=config["lora_dropout"],
-        target_modules=config["lora_target_modules"],
-        bias=config.get("lora_bias", "none"),
-    )
-    model = model.to(device)
-    logger.log_lora_config(lora_cfg)
-
-    # ── Dataset ─────────────────────────────────────────────────────────────
     train_ds, val_ds, test_ds, ds_cfg = load_and_tokenize_dataset(
         dataset_name=dataset_name,
         tokenizer=tokenizer,
@@ -238,10 +232,12 @@ def train(config: Dict):
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import argparse, sys
+    import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from main import build_config, parse_args
+    from main import build_config, build_model, parse_args
 
-    args = parse_args()
-    cfg  = build_config(args)
-    train(cfg)
+    args             = parse_args()
+    cfg              = build_config(args)
+    model, tok, lora_cfg, inj_meta = build_model(cfg)
+    cfg["noise_injection"] = inj_meta
+    train(cfg, model, tok, lora_cfg)
