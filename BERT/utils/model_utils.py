@@ -173,6 +173,15 @@ def apply_lora(
         inference_mode=False,
     )
 
+    # PEFT ≥0.10 checks `torch.distributed.tensor.DTensor` inline at adapter
+    # injection time.  On PyTorch 2.x the submodule exists but is not bound as
+    # an attribute of `torch.distributed` until explicitly imported, which
+    # triggers an AttributeError inside PEFT.  Force the binding here.
+    try:
+        import torch.distributed.tensor  # noqa: F401
+    except ImportError:
+        pass
+
     peft_model = get_peft_model(model, lora_cfg)
 
     trainable, total = peft_model.get_nb_trainable_parameters()
