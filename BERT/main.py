@@ -32,8 +32,6 @@ import os
 import sys
 from datetime import datetime
 
-from noise_injection import make_noisy_model_for_temperature, InjectionConfig
-from utils.model_utils import load_model_and_tokenizer, apply_lora
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,71 +224,6 @@ def build_config(args) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
-
-def build_model(config: dict):
-    """
-    Build the full model pipeline:
-      1. Load BERT base model + tokenizer
-      2. Apply PHANTOM temperature-aware noise injection (freezes base weights)
-      3. Attach LoRA adapters (only these will be trained)
-
-    Returns
-    -------
-    model : PeftModel
-    tokenizer
-    lora_cfg : LoraConfig  (for logging)
-    injection_meta : dict  (beta, T_tile, … for logging)
-    """
-    from utils.dataset_utils import DATASET_CONFIG
-
-    num_labels = DATASET_CONFIG[config["dataset"]]["num_labels"]
-
-    # Step 1 – base model
-    print(f"[main] Loading base model '{config['model_name']}' …")
-    base_model, tokenizer = load_model_and_tokenizer(
-        model_name=config["model_name"],
-        num_labels=num_labels,
-    )
-
-    # Step 2 – noise injection
-    T_tile = config["T_tile"]
-    injection_cfg = InjectionConfig(
-        sigma_rel=config["sigma_rel"],
-        inject_bias=config["inject_bias"],
-    )
-    print(f"[main] Applying PHANTOM noise injection at T_tile={T_tile} K …")
-    noisy_model = make_noisy_model_for_temperature(
-        base_model,
-        T_tile,
-        config=injection_cfg,
-    )
-    beta = getattr(noisy_model, "_injection_beta", None)
-    print(f"[main] beta(T={T_tile} K) = {beta:.4f}  "
-          f"sigma_rel={injection_cfg.sigma_rel}  inject_bias={injection_cfg.inject_bias}")
-
-    injection_meta = {
-        "T_tile_K":      T_tile,
-        "beta":          beta,
-        "sigma_rel":     injection_cfg.sigma_rel,
-        "inject_bias":   injection_cfg.inject_bias,
-        "inject_linear": injection_cfg.inject_linear,
-        "inject_conv2d": injection_cfg.inject_conv2d,
-    }
-
-    # Step 3 – attach LoRA to noisy_model
-    # Base params are already frozen; apply_lora re-enables grads on adapters only.
-    print("[main] Attaching LoRA adapters to noisy model …")
-    model, lora_cfg = apply_lora(
-        noisy_model,
-        r=config["lora_r"],
-        lora_alpha=config["lora_alpha"],
-        lora_dropout=config["lora_dropout"],
-        target_modules=config["lora_target_modules"],
-        bias=config.get("lora_bias", "none"),
-    )
-
-    return model, tokenizer, lora_cfg, injection_meta
-
 
 def main():
     args   = parse_args()
