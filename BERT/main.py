@@ -144,6 +144,13 @@ def parse_args():
     misc_grp.add_argument("--seed",   type=int, default=42)
     misc_grp.add_argument("--device", type=str, default="auto",
                           help="'auto', 'cpu', 'cuda', or 'cuda:N'.")
+    misc_grp.add_argument(
+        "--list_modules",
+        action="store_true",
+        default=False,
+        help="Load the model, print all Linear layer names available for "
+             "--lora_target_modules, then exit.",
+    )
 
     return parser.parse_args()
 
@@ -227,6 +234,21 @@ def build_config(args) -> dict:
 
 def main():
     args   = parse_args()
+
+    # ── Module discovery (--list_modules) ───────────────────────────────────
+    if args.list_modules:
+        from utils.model_utils import load_model_and_tokenizer, get_linear_module_names
+        from utils.dataset_utils import DATASET_CONFIG
+        num_labels = DATASET_CONFIG[args.dataset]["num_labels"]
+        print(f"Loading '{args.model_name}' to inspect Linear layer names …")
+        model, _ = load_model_and_tokenizer(args.model_name, num_labels)
+        names = get_linear_module_names(model)
+        print(f"\nLinear module names in '{args.model_name}':")
+        for n in names:
+            print(f"  {n}")
+        print(f"\nExample usage:  --lora_target_modules {' '.join(names[:3])}")
+        return
+
     config = build_config(args)
 
     print("\n" + "=" * 60)
