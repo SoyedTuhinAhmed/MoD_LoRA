@@ -9,6 +9,9 @@ import os
 import time
 from typing import Dict
 
+# Suppress HuggingFace tokenizer fork warning when using DataLoader workers.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -46,7 +49,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, device, scaler=None):
         optimizer.zero_grad()
 
         if scaler is not None:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast("cuda"):
                 outputs = model(**batch)
             loss = outputs.loss
             scaler.scale(loss).backward()
@@ -195,7 +198,7 @@ def train(config: Dict):
     )
 
     # AMP scaler (only if CUDA is available)
-    scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     # ── Training loop ───────────────────────────────────────────────────────
     best_val_acc  = -1.0
