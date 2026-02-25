@@ -75,7 +75,7 @@ def parse_args():
     noise_grp.add_argument(
         "--T_tile",
         type=float,
-        default=360.0,
+        default=320.0,
         help="Tile temperature in Kelvin for PHANTOM drift model (300–400 K range).",
     )
     noise_grp.add_argument(
@@ -94,11 +94,11 @@ def parse_args():
 
     # ── LoRA ─────────────────────────────────────────────────────────────────
     lora_grp = parser.add_argument_group("LoRA")
-    lora_grp.add_argument("--lora_r",              type=int,   default=16,
+    lora_grp.add_argument("--lora_r",              type=int,   default=8,
                           help="LoRA rank.")
     lora_grp.add_argument("--lora_alpha",          type=int,   default=32,
                           help="LoRA scaling factor.")
-    lora_grp.add_argument("--lora_dropout",        type=float, default=0.1,
+    lora_grp.add_argument("--lora_dropout",        type=float, default=0.0,
                           help="Dropout inside LoRA layers.")
     lora_grp.add_argument("--lora_target_modules", type=str,   nargs="+",
                           default=["query", "value"],
@@ -112,7 +112,7 @@ def parse_args():
     train_grp.add_argument("--num_epochs",          type=int,   default=5)
     train_grp.add_argument("--batch_size",          type=int,   default=32)
     train_grp.add_argument("--learning_rate",       type=float, default=2e-4)
-    train_grp.add_argument("--weight_decay",        type=float, default=0.01)
+    train_grp.add_argument("--weight_decay",        type=float, default=1e-4)
     train_grp.add_argument("--warmup_ratio",        type=float, default=0.06,
                            help="Fraction of total steps used for LR warm-up.")
     train_grp.add_argument("--max_length",          type=int,   default=128,
