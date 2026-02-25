@@ -307,13 +307,7 @@ def main():
 
     if config["mode"] in ("train", "both"):
         from train import train
-
-        model, tokenizer, lora_cfg, injection_meta = build_model(config)
-
-        # Embed injection metadata into config so it lands in experiment_log.json
-        config["noise_injection"] = injection_meta
-
-        best_ckpt, best_acc = train(config, model, tokenizer, lora_cfg)
+        best_ckpt, best_acc = train(config)
         print(f"\n[main] Training finished — best val_acc={best_acc:.4f}")
 
     if config["mode"] in ("eval", "both"):
