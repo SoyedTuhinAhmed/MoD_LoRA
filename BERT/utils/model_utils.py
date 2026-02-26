@@ -13,6 +13,11 @@ import torch
 import torch.nn as nn
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import logging as hf_logging
+
+# The verbose LOAD REPORT table (UNEXPECTED/MISSING keys) is expected when
+# loading a masked-LM checkpoint for sequence classification; suppress it.
+hf_logging.set_verbosity_error()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
