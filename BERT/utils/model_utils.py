@@ -204,6 +204,12 @@ def save_lora_checkpoint(model, output_dir: str, tag: str = ""):
     """
     save_path = os.path.join(output_dir, tag) if tag else output_dir
     os.makedirs(save_path, exist_ok=True)
+    # Pre-create README.md so PEFT uses ModelCard.load() rather than
+    # ModelCard.from_template(), which fails when huggingface_hub is
+    # installed as a .egg archive (template path is inside a zip file).
+    readme = os.path.join(save_path, "README.md")
+    if not os.path.exists(readme):
+        open(readme, "w").close()
     model.save_pretrained(save_path)
     print(f"[checkpoint] LoRA adapter saved → {save_path}")
     return save_path
